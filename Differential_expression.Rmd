@@ -6,6 +6,8 @@ output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
+if (!require("rmarkdown", quietly = TRUE))
+    install.packages("rmarkdown")
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
@@ -15,24 +17,24 @@ Having performed RNA-seq alignment and quantification in Google Colab, we will p
 
 ### Setting up
 
-We will first install required packages for DE analysis and import the gene expression matrix.
+We will first install the required packages for DE analysis and import the gene expression matrix.
 
 #### Install required packages
 
-```{r install}
+```{r install, message=FALSE, warning=FALSE}
 if (!require("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
 BiocManager::install()
 ```
 
-```{r install2}
+```{r install2, message=FALSE, warning=FALSE}
 if (!require("ggplot2", quietly = TRUE))
     install.packages("ggplot2")
 
 if (!require("dplyr", quietly = TRUE))
     install.packages("dplyr")
 
-BiocManager::install(c("DESeq2","EnhancedVolcano","clusterProfiler","msigdbr","enrichplot","pathview","fgsea"))
+BiocManager::install(c("DESeq2","EnhancedVolcano","clusterProfiler","fgsea"))
 
 ```
 
