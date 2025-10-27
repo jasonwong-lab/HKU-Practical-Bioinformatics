@@ -1,0 +1,220 @@
+---
+title: "RNA-seq"
+author: "Jason Wong"
+date: "2025-10-27"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Differential expression and visualisation using R
+
+Having performed RNA-seq alignment and quantification in Google Colab, we will proceed with a pre-generated gene expression matrix for 6 pairs of normal and tumour samples.
+
+### Setting up
+
+We will first install required packages for DE analysis and import the gene expression matrix.
+
+#### Install required packages
+
+```{r install}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install()
+```
+
+```{r install2}
+if (!require("ggplot2", quietly = TRUE))
+    install.packages("ggplot2")
+
+if (!require("dplyr", quietly = TRUE))
+    install.packages("dplyr")
+
+BiocManager::install(c("DESeq2","EnhancedVolcano","clusterProfiler","msigdbr","enrichplot","pathview","fgsea"))
+
+```
+
+#### Load expression matrix directly from URL
+
+```{r download}
+Counts_raw <- read.csv("https://drive.google.com/uc?export=download&id=19T5SJXUSsicoLnBAZza-DTXnwZSUO93Z")
+
+head(Counts_raw)
+```
+
+#### Reformat the gene expression matrix
+
+```{r reformat}
+
+#filter to remove non-coding genes without proper gene symbols
+Counts<- Counts_raw[!grepl("ENSG", Counts_raw$X), ]
+
+rownames(Counts) <- Counts$X
+Counts<-Counts[,-1]
+colnames(Counts) <- sub("^X", "", colnames(Counts))
+
+colnames(Counts)
+head(Counts)
+```
+
+### Perform differential expression analysis using DESeq2
+
+DESeq2 (along with EdgeR) is one of the most commonly used differential expression analysis tools for RNA-seq analysis. It contains functions for normalisation, variance stablisation and statistical testing for significance.
+
+#### Preparing experiment design setup
+
+```{r prepDE}
+library(DESeq2)
+
+# Define tumour/normal samples
+sample_names <- colnames(Counts)
+
+Conditions <- data.frame(
+  Name = sample_names,
+  Type = factor(ifelse(endsWith(sample_names, "T.RNA"), "Tumour",
+                       ifelse(endsWith(sample_names, "N.RNA"), "Normal", NA)),
+                levels = c("Normal", "Tumour")),
+  Sample = factor(substring(sample_names,0,7))
+)
+
+Conditions
+```
+
+#### Normalise sample counts
+
+```{r norm}
+# Perform normalisation and variance stabilisation of data
+dds <- DESeqDataSetFromMatrix(countData = Counts,
+                              colData = Conditions,
+                              design = ~ Type+Sample,
+                              tidy = FALSE)
+
+vsd <- vst(dds, blind = FALSE) #variance stabilisation
+```
+
+#### Using PCA plot to check dataset quality
+
+Principal component analysis is a dimensional reduction technique to give a visual overview of the data. Given that we have two groups "Normal" and "Tumour" we would want to see that samples belonging to in each group are separated from those in the other group.
+
+```{r pca, message=FALSE}
+
+library(ggplot2)
+
+pcaData <- plotPCA(vsd, intgroup = "Type", returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+pca <- ggplot(pcaData, aes(PC1, PC2, color = Type)) +
+  geom_point(size = 3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  theme_minimal() +
+  ggtitle("PCA of RNA-Seq Samples")
+
+print(pca)
+```
+
+#### Compute differentially expressed genes
+
+```{r DE}
+dds2 <- DESeq(dds)  
+res <- results(dds2, contrast = c("Type", "Tumour", "Normal")) 
+res.df <- as.data.frame(res)
+res.sig <- subset(res.df, !is.na(padj) & padj < 0.001 & abs(log2FoldChange) > 2) #subsetting to only significant results 
+res.sig <- res.sig[order(res.sig$padj), ]
+
+# print the number of significant genes
+dim(res.sig)
+head(res.sig)
+```
+
+### Downstream visualisation and gene set enrichment analysis
+
+While many analyses can be performed from a differentially expressed gene list, we will demonstrate using the most common. Namely making a volcano plot and doing a gene set enrichment analysis (GSEA).
+
+#### Volcano plot
+
+```{r volcano, message=FALSE, warning=FALSE, fig.width=10,fig.height=11}
+library(EnhancedVolcano)
+
+volcano <- EnhancedVolcano(res,
+    lab = rownames(res),
+    x = 'log2FoldChange',
+    y = 'pvalue',
+    pCutoff = 10e-6,
+    FCcutoff = 2.0,
+    xlim = c(-40, 40),
+    ylim = c(0,30),
+    title = "Tumour vs Normal",
+    colAlpha = 1,
+    pointSize = 2.0,
+    labSize = 5.0,
+    legendPosition = 'right',
+    legendLabSize = 16,
+    legendIconSize = 5.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.5
+)
+
+print(volcano)
+```
+
+#### Gene Set Enrichment Analysis (GSEA)
+
+Gene set enrichment analysis is a type of pathway analysis based on evaluating the enrichment of genes from a given gene set or pathway against the ranking of genes using two conditions (i.e. normal versus tumour). It is usually best to rank genes by the Wald statistic provided by DESeq. If there are no replicates then ranking can be done directly using fold change.
+
+```{r rank, warning=FALSE}
+library(clusterProfiler)
+library(dplyr)
+library(fgsea)
+
+# Create rank list of genes based on fold change
+res.df$gene <- rownames(res.df)
+res.df <- subset(res.df, !is.na(stat))
+
+# Rank by Wald statistic
+ranks <- res.df$stat
+names(ranks) <- res.df$gene
+ranks <- sort(ranks, decreasing = TRUE)
+
+head(ranks)
+```
+
+Retrieve Hallmark gene sets from MSigDB database (<https://www.gsea-msigdb.org/gsea/msigdb>) then perform GSEA.
+
+```{r gsea, warning=FALSE,fig.width=9,fig.height=11}
+
+# Hallmark (MSigDB) with SYMBOLs
+hallmark_t2g <- gmtPathways(url("https://drive.google.com/uc?export=download&id=1FHA-DIyuRpzE9xXf6_7c6I-T_5frrV_E","rb"))
+
+fgseaRes <- fgsea(pathways = hallmark_t2g, stats = ranks,minSize  = 15, maxSize  = 500, nperm=1000)
+
+fgseaResTidy <- fgseaRes %>%
+  as_tibble() %>%
+  arrange
+
+# Show in a nice table:
+fgseaResTidy %>% 
+  dplyr::select(-leadingEdge, -ES, -nMoreExtreme) %>% 
+  arrange(padj) %>% 
+  DT::datatable()
+
+ggplot(fgseaResTidy, aes(reorder(pathway, NES), NES)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Hallmark pathways") + 
+  theme_minimal()
+
+```
+
+```{r enrichment}
+plotEnrichment(hallmark_t2g[["HALLMARK_E2F_TARGETS"]],ranks) +labs(title="HALLMARK E2F TARGETS")
+
+
+plotEnrichment(hallmark_t2g[["HALLMARK_ANGIOGENESIS"]],ranks) +labs(title="HALLMARK ANGIOGENESIS")
+
+plotEnrichment(hallmark_t2g[["HALLMARK_ADIPOGENESIS"]],ranks) +labs(title="HALLMARK ADIPOGENESIS")
+```
